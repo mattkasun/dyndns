@@ -1,13 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io/ioutil"
-	//"log"
-	//"log/syslog"
+	"log/syslog"
 	"net/http"
 	"time"
+	"github.com/rdegges/go-ipify"
 )
 
 type secrets struct {
@@ -29,49 +30,73 @@ type record struct {
 }
 
 func main() {
-	var ip ips
 	var secret secrets
 	var dns record
-	//logger, err := syslog.New(syslog.LOG_ERR, "ip lookup")
-	//if err != nil {
-	//	log.Fatal(err)
-	//}
-	res, _ := http.Get("https://api.ipify.org?format=json")
-	body, _ := ioutil.ReadAll(res.Body)
-	json.Unmarshal(body, &ip) 
-	//ips := fmt.Sprintf("%s", ip)
-	//log.Println(ips)
-	//logger.Info(ips)
-	fmt.Println(body,ip, ip.Ip)
+	logger, err := syslog.New(syslog.LOG_ERR, "dyndns")
+	if err != nil {
+		panic( err)
+	}
+	//get current IP
+	ip, err := ipify.GetIp()
+	if err != nil {
+		logger.Err("unable to get current IP: ")
+		panic (err)
+	}
+
 
 	//read secrets
-	file, err := ioutil.ReadFile("./secrets")
+	file, err := ioutil.ReadFile("/home/mkasun/go/src/dyndns/secrets")
 	if err != nil {
+		logger.Err("unable to read secrets")
 		panic(err)
 	}
 	json.Unmarshal(file, &secret)
-	fmt.Println(secret, secret.Token, secret.Host)
 
 	//get current dns record
+	url := "https://api.digitalocean.com/v2/domains/nusak.ca/records/"+secret.Id
 	client := &http.Client{
 		Timeout: time.Second *10,
 	}
-	req,_ := http.NewRequest("GET","https://api.digitalocean.com/v2/domains/nusak.ca/records/"+secret.Id, nil)
+	req,_ := http.NewRequest("GET", url, nil)
 	req.Header.Add("Content-Type", "application/json")
 	req.Header.Add("Authorization", "Bearer " + secret.Token)
-	fmt.Println(req)
 	response, err := client.Do(req)
 	if err != nil {
+		logger.Err("unable to retrieve dns record")
 		panic (err)
 	}
-	body, _ = ioutil.ReadAll(response.Body)
+	body, _ := ioutil.ReadAll(response.Body)
 	fmt.Println(string(body))
-	json.Unmarshal(body,&dns)
-	fmt.Println(dns, dns.Domain_Record.Name, dns.Domain_Record.Id, dns.Domain_Record.Data)
-	if dns.Domain_Record.Data != ip.Ip {
-		fmt.Println("IP address has changed, need to update it")
-	} else {
-		fmt.Println("IP address still the same, nothing to do")
+	json.Unmarshal(body, &dns)
+	response.Body.Close()
+	//json.Unmarshal(body,&dns)
+	if dns.Domain_Record.Name != secret.Host {
+		fmt.Println(dns)
+		message := "wrong host name: DNS record=" + dns.Domain_Record.Name + " Host is " + secret.Host
+		logger.Err(message)
+		return
 	}
+	if dns.Domain_Record.Data == ip {
+		logger.Info("IP address still the same, nothing to do")
+		return
+	} 
+
+	//update dns record
+	dns.Domain_Record.Data = ip
+	b, _ := json.Marshal(dns)
+	req,_ = http.NewRequest("PUT", url, bytes.NewBuffer(b))
+	req.Header.Add("Content-Type", "application/json")
+	req.Header.Add("Authorization", "Bearer " + secret.Token)
+
+
+	response, err = client.Do(req)
+	if err != nil {
+		logger.Err("unable to update dns record")
+		panic (err)
+	}	
+	message := "updated ip address for " + secret.Host + " to " + ip
+	logger.Info(message)
+
+
 
 }
