@@ -1,16 +1,15 @@
 package main
 
 import (
-	//"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"golang.org/x/oauth2"
 	"github.com/digitalocean/godo"
-	"io/ioutil"
-	"log/syslog"
-	//"net/http"
 	"github.com/rdegges/go-ipify"
+	"io/ioutil"
+	"log"
+	"log/syslog"
+	"os"
 
 )
 
@@ -24,13 +23,6 @@ type ips struct {
 	Ip string
 }
 
-type record struct {
-	Domain_Record struct {
-		Name string
-		Id int
-		Data string
-	}
-}
 
 type TokenSource struct {
 	AccessToken string
@@ -43,28 +35,28 @@ func (t *TokenSource) Token() (*oauth2.Token, error) {
 	return token, nil
 }
 
+func checkError (logger *syslog.Writer, err error, message string) {
+	if err != nil {
+		message = message + err.Error()
+		logger.Err(message)
+		log.Fatal(err)
+	}
+}
+
 func main() {
 	var secret secrets
-	//var dns record
 	logger, err := syslog.New(syslog.LOG_ERR, "dyndns")
 	if err != nil {
-		panic( err)
+		log.Fatal(err)
 	}
+	
 	//get current IP
 	ip, err := ipify.GetIp()
-	if err != nil {
-		logger.Err("unable to get current IP: ")
-		panic (err)
-	}
-	fmt.Println(ip)
-
+	checkError(logger, err, "unable to get current IP: ")
 
 	//read secrets
-	file, err := ioutil.ReadFile("/home/mkasun/go/src/dyndns/secrets")
-	if err != nil {
-		logger.Err("unable to read secrets")
-		panic(err)
-	}
+	file, err := ioutil.ReadFile(os.Getenv("HOME")+"/.config/dyndns")
+	checkError(logger, err, "unable to read config: ")
 	json.Unmarshal(file, &secret)
 
 	//setup
@@ -76,13 +68,9 @@ func main() {
 	ctx := context.TODO()
 
 	//get current dns record
-	record, response, err := client.Domains.Record(ctx, "nusak.ca", secret.Id)
-	fmt.Println(record, response)
+	record, _, err := client.Domains.Record(ctx, "nusak.ca", secret.Id)
+	checkError(logger, err, "unable to retrieve dns record: ")
 
-	if err != nil {
-		logger.Err("unable to retrieve dns record")
-		panic (err)
-	}
 	if record.Name != secret.Host {
 		message := "wrong host name: DNS record=" + record.Name + " Host is " + secret.Host
 		logger.Err(message)
@@ -98,13 +86,9 @@ func main() {
 		Type: "A",
 		Data: ip, 
 	}
-	updatedRecord, response, err := client.Domains.EditRecord(ctx, "nusak.ca", secret.Id, editRequest)
+	_, _, err = client.Domains.EditRecord(ctx, "nusak.ca", secret.Id, editRequest)
 
-	if err != nil {
-		logger.Err("unable to update dns record")
-		panic (err)
-	}	
-	fmt.Println(updatedRecord, response)
+	checkError(logger, err, "unable to update dns record: ")
 	message := "updated ip address for " + secret.Host + " to " + ip
 	logger.Info(message)
 }
